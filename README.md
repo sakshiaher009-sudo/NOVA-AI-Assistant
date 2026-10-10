@@ -42,7 +42,7 @@ Browser ──→ Next.js Frontend ──→ FastAPI Backend
                     └──────────────────┼──────────────────┘
                                        │
                                  Text-to-Speech
-                               (Piper / macOS say)
+                          (Piper / macOS say / Windows SAPI5)
 ```
 
 **Persistent Storage:**
@@ -51,69 +51,67 @@ Browser ──→ Next.js Frontend ──→ FastAPI Backend
 
 ## 📋 Requirements
 
-- **macOS** (Apple Silicon M1/M2 recommended)
-- **Python 3.10+** (`brew install python@3.11`)
-- **Node.js 18+** (`brew install node`)
-- **Ollama** (https://ollama.ai/download)
-- **ffmpeg** (for audio processing: `brew install ffmpeg`)
+### macOS
+- macOS (Apple Silicon recommended)
+- Python 3.10+, Node.js 18+, and Ollama
+- FFmpeg on `PATH` for voice audio conversion (`brew install ffmpeg`)
+- macOS `say` and `afconvert` are used for built-in speech output.
 
-## 🚀 Installation
+### Windows
+- 64-bit Windows 10/11, Python 3.10+ (enable **Add Python to PATH**), and Node.js 18+
+- Ollama for Windows, with a model downloaded locally
+- FFmpeg available on `PATH` for voice audio conversion. For example, install with `winget install --id Gyan.FFmpeg --exact`, then reopen Command Prompt.
+- Windows built-in SAPI5 speech is used for audio output through the `pyttsx3` Python package installed by the Windows dependency marker. No separate audio SDK is required. Microphone access must be allowed for the browser.
 
-### 1. Clone and setup
+## 🚀 Installation and execution
+
+### macOS
 
 ```bash
 git clone <repo-url>
-cd nova
-
-# Automated setup (recommended)
+cd NOVA-AI-Assistant
 ./scripts/setup_mac.sh
-
-# Or manual setup
-make setup
-```
-
-### 2. Pull an LLM model
-
-```bash
-# Start Ollama
-ollama serve
-
-# Pull a model (choose one)
-ollama pull llama3.2:1b    # Lightweight (~1.3GB, good for 8GB RAM)
-ollama pull llama3.2:3b    # Balanced (~2GB)
-ollama pull llama3.1:8b    # Quality (~4.7GB, needs 16GB+ RAM)
-```
-
-### 3. Configure
-
-```bash
-cp .env.example .env
-# Edit .env to set your chosen model:
-# OLLAMA_MODEL=llama3.2:1b
-```
-
-### 4. Start NOVA
-
-```bash
-# Start everything
+ollama pull llama3.2:1b
 ./scripts/start_all.sh
-
-# Or individually
-make backend    # http://127.0.0.1:8000
-make frontend   # http://127.0.0.1:3000
 ```
 
-### 5. Open in browser
+The setup script installs the existing Python backend and Next.js frontend dependencies and creates `.env` from `.env.example` if needed. Start Ollama through its app or run `ollama serve` in another Terminal window if it is not already running. Set `OLLAMA_MODEL` in `.env` if you pulled a different model. The macOS launch script remains `scripts/start_all.sh`.
 
-- **Frontend:** http://127.0.0.1:3000
-- **API Docs:** http://127.0.0.1:8000/docs
+### Windows 10/11
 
-## 🧪 Testing
+Install Python, Node.js, Ollama, and FFmpeg first. The Python installer must add Python to `PATH`; after installing Ollama or FFmpeg, reopen Command Prompt so their commands are on `PATH`.
+
+```bat
+git clone <repo-url>
+cd NOVA-AI-Assistant
+scripts\setup_windows.bat
+ollama pull llama3.2:1b
+scripts\start_nova_windows.bat
+```
+
+The setup script checks required tools, installs backend and frontend dependencies, and creates a local `.env` with Windows SAPI5 selected when absent. If you already have a `.env` from another operating system, set `TTS_ENGINE=windows` in it. `pyttsx3` uses Windows SAPI5 for speech output. If you use another Ollama model, update `OLLAMA_MODEL` in `.env` to match. The launcher starts Ollama if its local service is not responding, then opens backend and frontend command windows. Open http://127.0.0.1:3000; API documentation is at http://127.0.0.1:8000/docs. Close the backend and frontend windows to stop NOVA.
+
+### Ollama models
+
+Choose a model appropriate for your available memory, then run the pull command on either OS:
 
 ```bash
-make test           # Run all tests
-make lint           # Lint all code
-make test-backend   # Backend only
+ollama pull llama3.2:1b   # lightweight
+ollama pull llama3.2:3b   # balanced
+ollama pull llama3.1:8b   # larger; allow several GB of disk space
+```
+
+On macOS, from the repository root:
+
+```bash
+make test
+make lint
+```
+
+On Windows, from the repository root:
+
+```bat
+backend\.venv\Scripts\python.exe -m pytest backend\tests\ -v --tb=short
 ```
 
 ## 🎯 NLP Pipeline

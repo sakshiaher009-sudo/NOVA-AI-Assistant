@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import platform
 import subprocess
 import tempfile
 import time
@@ -31,6 +32,14 @@ async def synthesize(text: str, output_path: Optional[str] = None, voice: Option
         return await _synthesize_piper(text, output_path, voice, speed)
     elif engine == "macos":
         return await _synthesize_macos(text, output_path, speed)
+    elif engine == "windows":
+        return await _synthesize_windows(text, output_path, speed)
+    elif engine == "auto":
+        if platform.system() == "Darwin":
+            return await _synthesize_macos(text, output_path, speed)
+        if platform.system() == "Windows":
+            return await _synthesize_windows(text, output_path, speed)
+        return await _synthesize_piper(text, output_path, voice, speed)
     else:
         raise RuntimeError(f"Unknown TTS engine: {engine}")
 
@@ -96,8 +105,30 @@ async def _synthesize_piper(
         return output_path
 
     except FileNotFoundError:
-        logger.warning("piper_not_found, falling back to macOS say")
-        return await _synthesize_macos(text, output_path, speed)
+        logger.warning("piper_not_found, falling back to platform TTS")
+        if platform.system() == "Darwin":
+            return await _synthesize_macos(text, output_path, speed)
+        if platform.system() == "Windows":
+            return await _synthesize_windows(text, output_path, speed)
+        raise RuntimeError("Piper TTS is unavailable and this platform has no configured fallback.")
+
+
+async def _synthesize_windows(text: str, output_path: Optional[str] = None, speed: float = 1.0) -> str:
+    """Use Windows SAPI5 through pyttsx3 to write a WAV file."""
+    if output_path is None:
+        fd, output_path = tempfile.mkstemp(suffix=".wav", dir=_get_audio_dir())
+        os.close(fd)
+    try:
+        import pyttsx3
+
+        engine = pyttsx3.init()
+        engine.setProperty("rate", int(engine.getProperty("rate") * speed))
+        engine.save_to_file(text, output_path)
+        engine.runAndWait()
+        engine.stop()
+        return output_path
+    except ImportError as exc:
+        raise RuntimeError("Windows TTS requires pyttsx3; reinstall backend requirements.") from exc
 
 
 def _get_audio_dir() -> str:
@@ -111,7 +142,9 @@ def _get_audio_dir() -> str:
 def is_available() -> bool:
     """Check if TTS is available."""
     settings = get_settings()
-    if settings.tts_engine == "macos":
+    if settings.tts_engine == "macos" or (
+        settings.tts_engine == "auto" and platform.system() == "Darwin"
+    ):
         try:
             result = subprocess.run(["which", "say"], capture_output=True)
             return result.returncode == 0
@@ -122,5 +155,11 @@ def is_available() -> bool:
             result = subprocess.run(["which", "piper"], capture_output=True)
             return result.returncode == 0
         except Exception:
+            return False
+    elif settings.tts_engine in {"auto", "windows"} and platform.system() == "Windows":
+        try:
+            import pyttsx3
+            return pyttsx3 is not None
+        except ImportError:
             return False
     return False

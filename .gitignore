@@ -9,6 +9,7 @@ build/
 .eggs/
 *.egg
 .venv/
+**/.venv/
 venv/
 env/
 
@@ -27,10 +28,11 @@ yarn-error.log*
 
 # Data
 data/app.db
+*.sqlite
+*.sqlite3
 data/chroma/
-data/audio/*.wav
-data/audio/*.mp3
-data/audio/*.webm
+data/audio/*
+!data/audio/.gitkeep
 data/documents/*
 !data/documents/.gitkeep
 !data/audio/.gitkeep

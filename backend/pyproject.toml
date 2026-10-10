@@ -37,6 +37,8 @@ dependencies = [
     "pydub>=0.25.1",
     "audioop-lts>=0.2.1; python_version >= '3.13'",
     "numpy>=1.26.0",
+    "faster-whisper>=1.0.0",
+    "pyttsx3>=2.90; sys_platform == 'win32'",
 
     # Utilities
     "pydantic>=2.7.0",
