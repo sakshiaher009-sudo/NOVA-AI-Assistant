@@ -1,0 +1,63 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.venv/
+venv/
+env/
+
+# Node
+node_modules/
+.next/
+out/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Data
+data/app.db
+data/chroma/
+data/audio/*.wav
+data/audio/*.mp3
+data/audio/*.webm
+data/documents/*
+!data/documents/.gitkeep
+!data/audio/.gitkeep
+!data/chroma/.gitkeep
+
+# Logs
+logs/*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Models
+models/
+*.bin
+*.onnx
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.nyc_output/
+
+# Build
+*.pyc
+*.pyo
