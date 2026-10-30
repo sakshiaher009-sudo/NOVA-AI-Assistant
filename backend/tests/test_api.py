@@ -1,15 +1,24 @@
 """NOVA — Backend Tests: API Endpoints."""
 
 import pytest
-from httpx import AsyncClient, ASGITransport
+from httpx import ASGITransport, AsyncClient
+
+from app.dependencies.auth import AuthenticatedUser, get_current_user, get_current_user_id
 from app.main import app
 
 
 @pytest.fixture
 async def client():
+    app.dependency_overrides[get_current_user_id] = lambda: "test-user-id"
+    app.dependency_overrides[get_current_user] = lambda: AuthenticatedUser(
+        id="test-user-id",
+        email="test@example.com",
+        claims={"sub": "test-user-id", "email": "test@example.com"}
+    )
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
+    app.dependency_overrides.clear()
 
 
 @pytest.mark.asyncio

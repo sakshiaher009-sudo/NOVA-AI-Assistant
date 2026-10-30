@@ -5,13 +5,13 @@ from __future__ import annotations
 import os
 import re
 
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form
-from fastapi.responses import FileResponse
-from typing import Optional
-
 import structlog
-from app.services.voice_service import transcribe_audio, voice_respond, speak_text
-from app.schemas.voice import TranscribeResponse, SpeakRequest
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi.responses import FileResponse
+
+from app.dependencies.auth import get_current_user_id
+from app.schemas.voice import SpeakRequest, TranscribeResponse
+from app.services.voice_service import speak_text, transcribe_audio, voice_respond
 from app.speech.wake_word import get_wake_word_detector
 
 router = APIRouter(tags=["voice"])
@@ -19,7 +19,10 @@ logger = structlog.get_logger(__name__)
 
 
 @router.post("/api/voice/transcribe", response_model=TranscribeResponse)
-async def transcribe(file: UploadFile = File(...)):
+async def transcribe(
+    file: UploadFile = File(...),
+    user_id: str = Depends(get_current_user_id),
+):
     """Transcribe uploaded audio to text."""
     try:
         content = await file.read()
@@ -40,7 +43,10 @@ async def transcribe(file: UploadFile = File(...)):
 
 
 @router.post("/api/voice/wake-check")
-async def wake_check(file: UploadFile = File(...)):
+async def wake_check(
+    file: UploadFile = File(...),
+    user_id: str = Depends(get_current_user_id),
+):
     """
     Check if wake word is present in a short audio clip.
     Uses openWakeWord on-device model first, falling back to Whisper transcript if unavailable.
@@ -93,7 +99,8 @@ async def wake_check(file: UploadFile = File(...)):
 @router.post("/api/voice/respond")
 async def respond(
     file: UploadFile = File(...),
-    conversation_id: Optional[str] = Form(None),
+    conversation_id: str | None = Form(None),
+    user_id: str = Depends(get_current_user_id),
 ):
     """Full voice pipeline: audio in → text response + audio out."""
     try:
@@ -101,7 +108,12 @@ async def respond(
         if len(content) == 0:
             raise HTTPException(status_code=400, detail="Empty audio file")
 
-        result = await voice_respond(content, file.filename or "audio.webm", conversation_id)
+        result = await voice_respond(
+            content,
+            file.filename or "audio.webm",
+            conversation_id,
+            user_id=user_id,
+        )
 
         response_data = {
             "message_id": result.get("message_id"),
@@ -122,7 +134,10 @@ async def respond(
 
 
 @router.post("/api/voice/speak")
-async def speak(request: SpeakRequest):
+async def speak(
+    request: SpeakRequest,
+    user_id: str = Depends(get_current_user_id),
+):
     """Convert text to speech audio."""
     try:
         audio_path = await speak_text(request.text)

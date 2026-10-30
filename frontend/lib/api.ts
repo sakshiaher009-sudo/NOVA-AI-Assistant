@@ -1,13 +1,30 @@
+import { supabase } from './supabase';
+
 /* API Client for NOVA Backend */
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000';
 
+async function getAuthHeaders(): Promise<Record<string, string>> {
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (session?.access_token) {
+      return { Authorization: `Bearer ${session.access_token}` };
+    }
+  } catch (err) {
+    // If auth session fails or client is offline/unauthenticated
+    console.debug('No active Supabase session for API request:', err);
+  }
+  return {};
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const url = `${API_BASE}${path}`;
+  const authHeaders = await getAuthHeaders();
   const res = await fetch(url, {
     ...options,
     headers: {
       'Content-Type': 'application/json',
+      ...authHeaders,
       ...options?.headers,
     },
   });
@@ -69,9 +86,13 @@ export async function sendMessageStream(
   onEvent?: (event: StreamEvent) => void,
 ): Promise<ChatResponse> {
   const url = `${API_BASE}/api/chat/stream`;
+  const authHeaders = await getAuthHeaders();
   const res = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      ...authHeaders,
+    },
     body: JSON.stringify({ message, conversation_id: conversationId }),
   });
 
@@ -168,7 +189,14 @@ export const reindexDocument = (id: string) => request<void>(`/api/documents/${i
 export async function uploadDocument(file: File): Promise<{ id: string; status: string }> {
   const formData = new FormData();
   formData.append('file', file);
-  const res = await fetch(`${API_BASE}/api/documents/upload`, { method: 'POST', body: formData });
+  const authHeaders = await getAuthHeaders();
+  const res = await fetch(`${API_BASE}/api/documents/upload`, {
+    method: 'POST',
+    headers: {
+      ...authHeaders,
+    },
+    body: formData,
+  });
   if (!res.ok) throw new Error('Upload failed');
   return res.json();
 }
@@ -207,7 +235,14 @@ export const getAnalytics = () => request<Analytics>('/api/analytics');
 export async function transcribeAudio(audioBlob: Blob): Promise<{ text: string; duration_ms: number }> {
   const formData = new FormData();
   formData.append('file', audioBlob, 'recording.webm');
-  const res = await fetch(`${API_BASE}/api/voice/transcribe`, { method: 'POST', body: formData });
+  const authHeaders = await getAuthHeaders();
+  const res = await fetch(`${API_BASE}/api/voice/transcribe`, {
+    method: 'POST',
+    headers: {
+      ...authHeaders,
+    },
+    body: formData,
+  });
   if (!res.ok) throw new Error('Transcription failed');
   return res.json();
 }
@@ -227,15 +262,26 @@ export async function voiceRespond(audioBlob: Blob, conversationId?: string): Pr
   const formData = new FormData();
   formData.append('file', audioBlob, 'recording.webm');
   if (conversationId) formData.append('conversation_id', conversationId);
-  const res = await fetch(`${API_BASE}/api/voice/respond`, { method: 'POST', body: formData });
+  const authHeaders = await getAuthHeaders();
+  const res = await fetch(`${API_BASE}/api/voice/respond`, {
+    method: 'POST',
+    headers: {
+      ...authHeaders,
+    },
+    body: formData,
+  });
   if (!res.ok) throw new Error('Voice response failed');
   return res.json();
 }
 
 export async function speakText(text: string): Promise<Blob> {
+  const authHeaders = await getAuthHeaders();
   const res = await fetch(`${API_BASE}/api/voice/speak`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      ...authHeaders,
+    },
     body: JSON.stringify({ text }),
   });
   if (!res.ok) throw new Error('Speech synthesis failed');
@@ -247,7 +293,14 @@ export async function wakeCheck(audioBlob: Blob): Promise<{ detected: boolean; t
   try {
     const formData = new FormData();
     formData.append('file', audioBlob, 'wake.webm');
-    const res = await fetch(`${API_BASE}/api/voice/wake-check`, { method: 'POST', body: formData });
+    const authHeaders = await getAuthHeaders();
+    const res = await fetch(`${API_BASE}/api/voice/wake-check`, {
+      method: 'POST',
+      headers: {
+        ...authHeaders,
+      },
+      body: formData,
+    });
     if (!res.ok) return { detected: false, transcript: '' };
     return res.json();
   } catch {

@@ -18,7 +18,6 @@ from app.api.routes_documents import router as documents_router
 from app.api.routes_settings import router as settings_router
 from app.api.routes_analytics import router as analytics_router
 from app.api.routes_agent import router as agent_router
-from app.api.routes_auth import router as auth_router
 
 logger = structlog.get_logger(__name__)
 
@@ -95,8 +94,6 @@ def create_app() -> FastAPI:
     app.include_router(settings_router)
     app.include_router(analytics_router)
     app.include_router(agent_router)
-    app.include_router(auth_router)
-
     return app
 
 

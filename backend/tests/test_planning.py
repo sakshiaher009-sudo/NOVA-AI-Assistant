@@ -1,6 +1,7 @@
 """Focused tests for NOVA Phase 4 planning and task context."""
 
 import pytest
+
 from app.agent.planner import create_plan
 from app.agent.task_context import TaskContext
 
@@ -65,7 +66,7 @@ def test_fast_path_detection():
 
 @pytest.mark.asyncio
 async def test_verification_failure_triggers_honest_response(monkeypatch):
-    from app.agent.orchestrator import _verify_tool_result, _handle_verification_failure
+    from app.agent.orchestrator import _handle_verification_failure, _verify_tool_result
 
     # Empty file search result should fail verification
     empty_result = {"files": [], "total_matches": 0}
@@ -116,7 +117,8 @@ async def test_verification_fail_open_on_exception(monkeypatch):
     monkeypatch.setattr(ollama_client, "generate", fail_generate)
 
     is_valid, reason = await _verify_tool_result(
-        "What is 100 * 5?", "calculator", {"result": 4}
+        "Find recent background information on a new topic", "browser_search",
+        {"results": [{"title": "A possibly relevant result"}]},
     )
     assert is_valid is True
     assert "fail open" in reason.lower() or "skipped" in reason.lower()

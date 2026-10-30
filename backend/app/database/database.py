@@ -1,11 +1,16 @@
-"""NOVA — Async SQLite Database Engine & Session Management."""
+"""NOVA — Async Database Engine & Session Management.
+
+Supports SQLite (via aiosqlite for local dev and tests) and PostgreSQL
+(via asyncpg for Supabase and production deployments).
+"""
 
 from __future__ import annotations
 
-from pathlib import Path
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
+from pathlib import Path
 
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -20,12 +25,18 @@ _session_factory = None
 
 
 def _resolve_db_url() -> str:
-    """Resolve the database URL, ensuring the data directory exists."""
+    """Resolve the database URL, ensuring dialect compatibility and SQLite paths."""
     settings = get_settings()
-    url = settings.database_url
+    url = settings.database_url.strip()
+
+    # Normalize standard postgresql URLs to use the asyncpg async driver
+    if url.startswith("postgres://"):
+        url = url.replace("postgres://", "postgresql+asyncpg://", 1)
+    elif url.startswith("postgresql://") and not url.startswith("postgresql+asyncpg://"):
+        url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
+
     # Ensure data directory exists for SQLite
     if "sqlite" in url:
-        # Extract path from URL like sqlite+aiosqlite:///./data/app.db
         db_path_str = url.split("///")[-1]
         db_path = Path(db_path_str)
         if not db_path.is_absolute():
@@ -40,11 +51,22 @@ async def get_engine():
     global _engine
     if _engine is None:
         url = _resolve_db_url()
+        connect_args = {}
+        # Apply SQLite-specific arguments only when SQLite dialect is selected
+        if "sqlite" in url:
+            connect_args["check_same_thread"] = False
+
         _engine = create_async_engine(
             url,
             echo=False,
-            connect_args={"check_same_thread": False},
+            connect_args=connect_args,
         )
+        if "sqlite" in url:
+            @event.listens_for(_engine.sync_engine, "connect")
+            def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record):
+                cursor = dbapi_connection.cursor()
+                cursor.execute("PRAGMA foreign_keys=ON")
+                cursor.close()
     return _engine
 
 

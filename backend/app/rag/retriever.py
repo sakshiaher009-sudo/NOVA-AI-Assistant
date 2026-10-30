@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 import structlog
 
 from app.config import get_settings
@@ -15,10 +13,11 @@ logger = structlog.get_logger(__name__)
 async def search_documents(
     query: str,
     n_results: int | None = None,
-    document_id: Optional[str] = None,
+    document_id: str | None = None,
+    user_id: str | None = None,
 ) -> list[dict]:
     """
-    Search uploaded documents using vector similarity.
+    Search uploaded documents using vector similarity scoped by user.
 
     Returns list of dicts with: document_name, document_id, content, score, chunk_id.
     """
@@ -28,8 +27,20 @@ async def search_documents(
     # Generate query embedding
     query_embedding = embeddings.embed_query(query)
 
-    # Search with optional document filter
-    where = {"document_id": document_id} if document_id else None
+    # Search with optional filters
+    filters = []
+    if document_id:
+        filters.append({"document_id": document_id})
+    if user_id:
+        filters.append({"user_id": user_id})
+
+    if len(filters) == 1:
+        where = filters[0]
+    elif len(filters) > 1:
+        where = {"$and": filters}
+    else:
+        where = None
+
     results = vector_store.search(query_embedding, n_results=n, where=where)
 
     # Format results
@@ -45,5 +56,5 @@ async def search_documents(
             "score": r.get("score", 0.0),
         })
 
-    logger.info("rag_search_complete", query_len=len(query), results=len(formatted))
+    logger.info("rag_search_complete", query_len=len(query), results=len(formatted), user_id=user_id)
     return formatted

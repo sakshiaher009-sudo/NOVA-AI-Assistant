@@ -16,10 +16,12 @@ export default function LoginPage() {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
+  const [confirmEmail, setConfirmEmail] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
+    setConfirmEmail(false);
 
     if (mode === "register" && password !== confirmPassword) {
       setError("Passwords do not match");
@@ -38,12 +40,19 @@ export default function LoginPage() {
         await register(name, email, password);
       }
       router.push("/");
-    } catch (err: any) {
-      setError(err.message || "Something went wrong");
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Something went wrong";
+      if (message === "__CONFIRM_EMAIL__") {
+        // Supabase requires email confirmation — show info banner, not an error
+        setConfirmEmail(true);
+      } else {
+        setError(message);
+      }
     } finally {
       setIsLoading(false);
     }
   };
+
 
   return (
     <div className="login-container min-h-screen flex items-center justify-center bg-[#f8fafc] px-4 relative overflow-hidden">
@@ -81,6 +90,17 @@ export default function LoginPage() {
           <div className="mb-4 px-4 py-2.5 rounded-xl bg-red-50 border border-red-200 text-xs font-medium text-red-600 flex items-center gap-2 animate-fadeIn">
             <AlertCircle size={14} />
             {error}
+          </div>
+        )}
+
+        {/* Email Confirmation Banner */}
+        {confirmEmail && (
+          <div className="mb-4 px-4 py-3 rounded-xl bg-sky-50 border border-sky-200 text-xs font-medium text-sky-700 animate-fadeIn">
+            <p className="font-semibold mb-0.5">Check your inbox ✉️</p>
+            <p className="text-sky-600 font-normal">
+              We sent a confirmation link to <span className="font-semibold">{email}</span>.
+              Click the link to activate your account, then sign in.
+            </p>
           </div>
         )}
 

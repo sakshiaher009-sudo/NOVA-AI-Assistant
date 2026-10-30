@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-import os
-from pathlib import Path
 from functools import lru_cache
-from typing import Optional
+from pathlib import Path
 
 from pydantic_settings import BaseSettings
-from pydantic import Field
 
 
 class Settings(BaseSettings):
@@ -41,7 +38,7 @@ class Settings(BaseSettings):
     stt_compute_type: str = "int8"
 
     # --- Text-to-Speech ---
-    tts_engine: str = "macos"
+    tts_engine: str = "auto"
     tts_piper_voice: str = "en_US-lessac-medium"
     tts_speed: float = 1.0
 
@@ -56,9 +53,15 @@ class Settings(BaseSettings):
     max_upload_mb: int = 25
     allowed_extensions: str = "pdf,txt,md,docx"
 
-    # --- Security ---
-    cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
-    jwt_secret: str = "nova-dev-secret-change-in-production-6f8a9b2c"
+    # --- Security & Authentication ---
+    cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000,https://nova-ai-assistant-neon.vercel.app"
+    supabase_url: str | None = None
+    supabase_publishable_key: str | None = None
+    supabase_jwt_audience: str = "authenticated"
+    supabase_jwks_url: str | None = None
+    # A signing secret must be supplied through the environment. Never ship a
+    # known default that would let a remote client mint valid session tokens.
+    jwt_secret: str | None = None
     jwt_algorithm: str = "HS256"
     jwt_expire_hours: int = 72
 
@@ -73,7 +76,7 @@ class Settings(BaseSettings):
 
     # --- Wake Word Detection ---
     wake_word_model: str = "hey_jarvis"
-    wake_word_model_path: Optional[str] = None
+    wake_word_model_path: str | None = None
     wake_word_threshold: float = 0.5
 
     model_config = {
@@ -107,6 +110,24 @@ class Settings(BaseSettings):
     def max_upload_bytes(self) -> int:
         """Return max upload size in bytes."""
         return self.max_upload_mb * 1024 * 1024
+
+    @property
+    def effective_jwks_url(self) -> str | None:
+        """Return configured JWKS endpoint or derive from Supabase URL."""
+        if self.supabase_jwks_url:
+            return self.supabase_jwks_url
+        if self.supabase_url:
+            base = self.supabase_url.rstrip("/")
+            return f"{base}/auth/v1/.well-known/jwks.json"
+        return None
+
+    @property
+    def effective_issuer(self) -> str | None:
+        """Return expected Supabase token issuer if supabase_url is set."""
+        if self.supabase_url:
+            base = self.supabase_url.rstrip("/")
+            return f"{base}/auth/v1"
+        return None
 
 
 @lru_cache

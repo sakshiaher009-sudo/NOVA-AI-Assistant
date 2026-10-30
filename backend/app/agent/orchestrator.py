@@ -19,51 +19,51 @@ import asyncio
 import json
 import re
 import time
-from typing import Any, Optional, Callable, Awaitable
+from collections.abc import AsyncGenerator, Awaitable, Callable
+from typing import Any
 
 import structlog
 
-from app.config import get_settings
-from app.nlp.classifier import analyze as nlp_analyze
-from app.nlp.intent import Intent, classify_intent
-from app.llm import ollama_client
-from app.llm.schemas import LLMMessage
 from app.agent.context import build_context
 from app.agent.conversation_state import (
     ConversationState,
     build_conversation_state,
     load_conversation_state,
 )
+from app.agent.memory import search_memories
+from app.agent.planner import Plan, create_plan, plan_from_tool_calls
 from app.agent.prompts import (
-    get_system_prompt,
     build_rag_prompt,
     build_summary_prompt,
     build_synthesis_prompt,
 )
+from app.agent.response import format_error_response, format_tool_response
 from app.agent.router import (
-    is_tool_call,
-    is_rag_call,
-    is_internal_call,
     allows_llm_tool_calls,
+    is_internal_call,
+    is_rag_call,
+    is_tool_call,
     route_description,
 )
 from app.agent.states import AgentState
-from app.agent.tool_registry import (
-    get_tool_for_intent,
-    init_tools,
-    get_tool,
-    get_tools_schema,
-)
-from app.agent.planner import Plan, create_plan, plan_from_tool_calls
 from app.agent.task_context import TaskContext
-from app.agent.response import format_tool_response, format_error_response
-from app.agent.memory import search_memories, store_memory
+from app.agent.tool_registry import (
+    get_tool,
+    get_tool_for_intent,
+    get_tools_schema,
+    init_tools,
+)
+from app.config import get_settings
 from app.database.database import get_db_session
 from app.database.repositories import (
     ConversationRepo,
     MessageRepo,
     ToolExecutionRepo,
 )
+from app.llm import ollama_client
+from app.llm.schemas import LLMMessage
+from app.nlp.classifier import analyze as nlp_analyze
+from app.nlp.intent import Intent, classify_intent
 from app.schemas.chat import ChatResponse, NLPResult, PlanStatus, ToolResult
 
 logger = structlog.get_logger(__name__)
@@ -77,21 +77,21 @@ def _is_fast_path(nlp_result: NLPResult) -> bool:
 
 
 async def _conversation_context(
-    message: str, conversation_id: Optional[str]
+    message: str, conversation_id: str | None, user_id: str = "default_user"
 ) -> tuple[str, list[Any], list[dict]]:
     async with get_db_session() as session:
         if conversation_id:
-            conv = await ConversationRepo.get(session, conversation_id)
+            conv = await ConversationRepo.get(session, conversation_id, user_id=user_id)
             if not conv:
-                conv = await ConversationRepo.create(session, title=_generate_title(message))
+                conv = await ConversationRepo.create(session, title=_generate_title(message), user_id=user_id)
         else:
-            conv = await ConversationRepo.create(session, title=_generate_title(message))
-        messages = await MessageRepo.get_by_conversation(session, conv.id)
+            conv = await ConversationRepo.create(session, title=_generate_title(message), user_id=user_id)
+        messages = await MessageRepo.get_by_conversation(session, conv.id, user_id=user_id)
     history = [{"role": item.role, "content": item.content} for item in messages]
     return conv.id, messages, history
 
 
-def _pending_clarification(messages: list[Any]) -> Optional[dict[str, str]]:
+def _pending_clarification(messages: list[Any]) -> dict[str, str] | None:
     if not messages or messages[-1].role != "assistant" or not messages[-1].entities_json:
         return None
     try:
@@ -116,7 +116,7 @@ def _pending_clarification(messages: list[Any]) -> Optional[dict[str, str]]:
 
 def _resolve_clarification_reply(
     message: str, pending: dict[str, str]
-) -> Optional[NLPResult]:
+) -> NLPResult | None:
     reply = message.strip().lower()
     if pending["awaiting"] in {
         "search_query_for_google",
@@ -185,7 +185,7 @@ def _resolve_clarification_reply(
     )
 
 
-def _website_followup_state(tool_result: Optional[ToolResult]) -> Optional[dict[str, str]]:
+def _website_followup_state(tool_result: ToolResult | None) -> dict[str, str] | None:
     if not tool_result or not tool_result.success or not isinstance(tool_result.result, dict):
         return None
     site_name = str(tool_result.result.get("site_name", "")).strip().lower()
@@ -205,12 +205,12 @@ async def _ensure_initialized():
         _initialized = True
 
 
-async def _relevant_conversation_memory(state: ConversationState) -> list[dict]:
+async def _relevant_conversation_memory(state: ConversationState, user_id: str = "default_user") -> list[dict]:
     """Load only bounded memory relevant to the current conversation topic."""
     if not state.current_topic:
         return []
     try:
-        return await search_memories(state.current_topic)
+        return await search_memories(state.current_topic, user_id=user_id)
     except Exception as exc:
         logger.warning("conversation_memory_lookup_failed", error=str(exc))
         return []
@@ -218,8 +218,9 @@ async def _relevant_conversation_memory(state: ConversationState) -> list[dict]:
 
 async def process_message(
     message: str,
-    conversation_id: Optional[str] = None,
+    conversation_id: str | None = None,
     is_voice: bool = False,
+    user_id: str = "default_user",
 ) -> ChatResponse:
     """
     Process a user message through the full agent pipeline.
@@ -237,7 +238,7 @@ async def process_message(
     # ── 1. Resolve conversation continuation before NLP ────────────────────────
     agent_state = AgentState.THINKING
     conversation_id, conversation_messages, conversation_history = await _conversation_context(
-        message, conversation_id
+        message, conversation_id, user_id=user_id
     )
     previous_state = load_conversation_state(conversation_messages)
     pending = _pending_clarification(conversation_messages)
@@ -268,11 +269,12 @@ async def process_message(
 
     # ── 2. Save the current user message ────────────────────────────────────────
     async with get_db_session() as session:
-        user_msg = await MessageRepo.create(
+        await MessageRepo.create(
             session,
             conversation_id=conversation_id,
             role="user",
             content=message,
+            user_id=user_id,
             intent=nlp_result.intent,
             confidence=nlp_result.confidence,
             entities=nlp_result.entities if nlp_result.entities else None,
@@ -283,13 +285,13 @@ async def process_message(
     history = conversation_history
 
     # ── 4. Route & Execute ─────────────────────────────────────────────────────
-    tool_result_schema: Optional[ToolResult] = None
+    tool_result_schema: ToolResult | None = None
     plan_status: PlanStatus | None = None
     response_text = ""
     llm_start = time.perf_counter()
     llm_duration_ms = 0
-    planned_task: Optional[Plan] = None
-    pending_for_response: Optional[dict[str, str]] = None
+    planned_task: Plan | None = None
+    pending_for_response: dict[str, str] | None = None
 
     try:
         if current_state.missing_information:
@@ -359,13 +361,13 @@ async def process_message(
             # ── Fast path for deterministic simple queries (e.g. GET_TIME, CALCULATE) ──
             agent_state = AgentState.EXECUTING
             response_text, tool_result_schema = await _handle_tool_intent(
-                intent, message, nlp_result, history, synthesize=False
+                intent, message, nlp_result, history, synthesize=False, user_id=user_id
             )
             agent_state = AgentState.RESPONDING
         else:
             # ── Native LLM Tool-Calling Path ──
             agent_state = AgentState.THINKING
-            relevant_memory = await _relevant_conversation_memory(current_state)
+            relevant_memory = await _relevant_conversation_memory(current_state, user_id=user_id)
             relevant_tool_result = None
             if current_state.unresolved_references and current_state.previous_tool_result is not None:
                 relevant_tool_result = json.dumps(current_state.previous_tool_result, default=str)
@@ -410,19 +412,19 @@ async def process_message(
             elif is_rag_call(nlp_result):
                 # RAG path when LLM answers without direct tool_calls
                 agent_state = AgentState.RESPONDING
-                response_text = await _handle_rag_intent(intent, message, nlp_result, history)
+                response_text = await _handle_rag_intent(intent, message, nlp_result, history, user_id=user_id)
             elif is_internal_call(nlp_result):
                 # Internal handlers (memory, system status)
                 agent_state = AgentState.RESPONDING
                 if intent == Intent.SEARCH_MEMORY.value:
-                    response_text = await _handle_memory_search(message)
+                    response_text = await _handle_memory_search(message, user_id=user_id)
                 elif intent == Intent.SYSTEM_STATUS.value:
                     response_text = await _handle_system_status()
             elif is_tool_call(nlp_result) and not llm_resp.content.strip():
                 # Fallback to registered tool handler if model produced no output and no tool_calls
                 agent_state = AgentState.EXECUTING
                 response_text, tool_result_schema = await _handle_tool_intent(
-                    intent, message, nlp_result, history
+                    intent, message, nlp_result, history, user_id=user_id
                 )
                 agent_state = AgentState.RESPONDING
             else:
@@ -462,6 +464,7 @@ async def process_message(
             conversation_id=conversation_id,
             role="assistant",
             content=response_text,
+            user_id=user_id,
             intent=intent,
             entities={
                 "pending_clarification": pending_for_response,
@@ -476,7 +479,7 @@ async def process_message(
 
         # Update conversation title if it's the first exchange
         if len(history) == 0:
-            await ConversationRepo.update_title(session, conversation_id, _generate_title(message))
+            await ConversationRepo.update_title(session, conversation_id, _generate_title(message), user_id=user_id)
 
     return ChatResponse(
         message_id=assistant_msg.id,
@@ -493,8 +496,9 @@ async def process_message(
 
 async def process_message_stream(
     message: str,
-    conversation_id: Optional[str] = None,
+    conversation_id: str | None = None,
     is_voice: bool = False,
+    user_id: str = "default_user",
 ) -> AsyncGenerator[dict[str, Any], None]:
     """Process user message yielding SSE events as tokens and tool status updates stream."""
     await _ensure_initialized()
@@ -504,7 +508,7 @@ async def process_message_stream(
     yield {"type": "state", "agent_state": AgentState.THINKING.value}
 
     conversation_id, conversation_messages, conversation_history = await _conversation_context(
-        message, conversation_id
+        message, conversation_id, user_id=user_id
     )
     previous_state = load_conversation_state(conversation_messages)
     pending = _pending_clarification(conversation_messages)
@@ -533,6 +537,7 @@ async def process_message_stream(
             conversation_id=conversation_id,
             role="user",
             content=message,
+            user_id=user_id,
             intent=nlp_result.intent,
             confidence=nlp_result.confidence,
             entities=nlp_result.entities if nlp_result.entities else None,
@@ -545,9 +550,9 @@ async def process_message_stream(
     history = conversation_history
 
     response_text = ""
-    tool_result_schema: Optional[ToolResult] = None
-    plan_status: Optional[PlanStatus] = None
-    pending_for_response: Optional[dict[str, str]] = None
+    tool_result_schema: ToolResult | None = None
+    plan_status: PlanStatus | None = None
+    pending_for_response: dict[str, str] | None = None
 
     try:
         if current_state.missing_information:
@@ -616,7 +621,7 @@ async def process_message_stream(
         elif _is_fast_path(nlp_result):
             yield {"type": "state", "agent_state": AgentState.EXECUTING.value}
             response_text, tool_result_schema = await _handle_tool_intent(
-                intent, message, nlp_result, history, synthesize=False
+                intent, message, nlp_result, history, synthesize=False, user_id=user_id
             )
             yield {"type": "state", "agent_state": AgentState.RESPONDING.value}
             words = response_text.split(" ")
@@ -625,7 +630,7 @@ async def process_message_stream(
                 yield {"type": "token", "token": token}
                 await asyncio.sleep(0.01)
         else:
-            relevant_memory = await _relevant_conversation_memory(current_state)
+            relevant_memory = await _relevant_conversation_memory(current_state, user_id=user_id)
             relevant_tool_result = None
             if current_state.unresolved_references and current_state.previous_tool_result is not None:
                 relevant_tool_result = json.dumps(current_state.previous_tool_result, default=str)
@@ -661,7 +666,7 @@ async def process_message_stream(
                         try:
                             evt = await asyncio.wait_for(queue.get(), timeout=0.03)
                             yield evt
-                        except asyncio.TimeoutError:
+                        except TimeoutError:
                             pass
                     while not queue.empty():
                         yield queue.get_nowait()
@@ -679,7 +684,7 @@ async def process_message_stream(
                     yield {"type": "token", "token": response_text}
             elif is_rag_call(nlp_result):
                 yield {"type": "state", "agent_state": AgentState.RESPONDING.value}
-                response_text = await _handle_rag_intent(intent, message, nlp_result, history)
+                response_text = await _handle_rag_intent(intent, message, nlp_result, history, user_id=user_id)
                 words = response_text.split(" ")
                 for idx, word in enumerate(words):
                     token = word if idx == 0 else f" {word}"
@@ -688,7 +693,7 @@ async def process_message_stream(
             elif is_internal_call(nlp_result):
                 yield {"type": "state", "agent_state": AgentState.RESPONDING.value}
                 if intent == Intent.SEARCH_MEMORY.value:
-                    response_text = await _handle_memory_search(message)
+                    response_text = await _handle_memory_search(message, user_id=user_id)
                 elif intent == Intent.SYSTEM_STATUS.value:
                     response_text = await _handle_system_status()
                 yield {"type": "token", "token": response_text}
@@ -700,13 +705,13 @@ async def process_message_stream(
                     await queue_tool.put({"type": "state", "agent_state": s})
 
                 worker_tool = asyncio.create_task(
-                    _handle_tool_intent(intent, message, nlp_result, history, on_state=on_state_tool_cb)
+                    _handle_tool_intent(intent, message, nlp_result, history, on_state=on_state_tool_cb, user_id=user_id)
                 )
                 while not worker_tool.done():
                     try:
                         evt = await asyncio.wait_for(queue_tool.get(), timeout=0.03)
                         yield evt
-                    except asyncio.TimeoutError:
+                    except TimeoutError:
                         pass
                 while not queue_tool.empty():
                     yield queue_tool.get_nowait()
@@ -747,6 +752,7 @@ async def process_message_stream(
             conversation_id=conversation_id,
             role="assistant",
             content=response_text,
+            user_id=user_id,
             intent=intent,
             entities={
                 "pending_clarification": pending_for_response,
@@ -758,7 +764,7 @@ async def process_message_stream(
             is_voice=is_voice,
         )
         if len(history) == 0:
-            await ConversationRepo.update_title(session, conversation_id, _generate_title(message))
+            await ConversationRepo.update_title(session, conversation_id, _generate_title(message), user_id=user_id)
 
     yield {
         "type": "done",
@@ -782,8 +788,9 @@ async def _handle_tool_intent(
     nlp_result: NLPResult,
     history: list[dict],
     synthesize: bool = True,
-    on_state: Optional[Callable[[str], Awaitable[None]]] = None,
-) -> tuple[str, Optional[ToolResult]]:
+    on_state: Callable[[str], Awaitable[None]] | None = None,
+    user_id: str = "default_user",
+) -> tuple[str, ToolResult | None]:
     """
     Handle intents that map to tool execution.
 
@@ -815,6 +822,7 @@ async def _handle_tool_intent(
                 output_data={"result": str(result.result), "display": result.display_text},
                 success=result.success,
                 error_message=result.error,
+                user_id=user_id,
             )
     except Exception as e:
         logger.warning("tool_execution_log_failed", error=str(e))
@@ -866,11 +874,39 @@ async def _verify_tool_result(
     tool_result: Any,
 ) -> tuple[bool, str]:
     """
-    Judge whether the tool output validly answers the user's intent using an LLM judgment call.
-    Fails open (returns is_valid=True) if the LLM call fails or times out.
+    Check deterministic failure cases, then use an LLM for ambiguous output.
+    LLM verification fails open on connectivity errors, while known empty
+    searches, failed commands, and incorrect arithmetic are rejected locally.
     """
     if tool_result is None:
         return False, "Tool returned no output."
+
+    if tool_name == "file_search" and isinstance(tool_result, dict):
+        if not tool_result.get("files"):
+            return False, "File search returned no matching files."
+
+    if tool_name == "execute_terminal" and isinstance(tool_result, dict):
+        exit_code = tool_result.get("exit_code")
+        if isinstance(exit_code, int) and exit_code != 0:
+            return False, f"Command exited with status {exit_code}."
+
+    if tool_name == "calculator" and isinstance(tool_result, dict):
+        import re
+
+        from app.tools.calculator import safe_calculate
+
+        expression_match = re.search(
+            r"(?<![\w.])\d+(?:\.\d+)?(?:\s*[+\-*/%^×÷]\s*\d+(?:\.\d+)?)+",
+            user_message,
+        )
+        if expression_match and "result" in tool_result:
+            try:
+                expected = safe_calculate(expression_match.group(0))
+                actual = float(tool_result["result"])
+                if abs(expected - actual) > max(1e-9, abs(expected) * 1e-9):
+                    return False, "Calculator result does not match the requested expression."
+            except (TypeError, ValueError, SyntaxError, ZeroDivisionError):
+                pass
 
     try:
         settings = get_settings()
@@ -936,7 +972,7 @@ async def _handle_planned_task(
     plan: Plan,
     message: str,
     history: list[dict],
-    on_state: Optional[Callable[[str], Awaitable[None]]] = None,
+    on_state: Callable[[str], Awaitable[None]] | None = None,
 ) -> tuple[str, ToolResult | None, PlanStatus]:
     """Execute a validated plan one step at a time and stop on new ambiguity."""
     context = TaskContext(original_goal=plan.goal, plan=plan, state=AgentState.EXECUTING.value)
@@ -1050,7 +1086,7 @@ async def _synthesize_tool_response(
     original_message: str,
     tool_name: str,
     tool_result: Any,
-    display_text: Optional[str],
+    display_text: str | None,
     history: list[dict],
 ) -> str:
     """Feed tool output back into the LLM with few-shot synthesis prompt."""
@@ -1149,14 +1185,14 @@ def _build_tool_params(intent: str, message: str, nlp_result: NLPResult) -> dict
 
 
 async def _handle_rag_intent(
-    intent: str, message: str, nlp_result: NLPResult, history: list[dict]
+    intent: str, message: str, nlp_result: NLPResult, history: list[dict], user_id: str = "default_user"
 ) -> str:
     """Handle document search / summary via RAG."""
     try:
         from app.rag.retriever import search_documents
 
         query = nlp_result.entities.get("topic", message)
-        results = await search_documents(query)
+        results = await search_documents(query, user_id=user_id)
 
         if not results:
             return "I couldn't find relevant information in your uploaded documents."
@@ -1180,11 +1216,11 @@ async def _handle_rag_intent(
         return "I encountered an error searching your documents. Please try again."
 
 
-async def _handle_memory_search(message: str) -> str:
+async def _handle_memory_search(message: str, user_id: str = "default_user") -> str:
     """Search through stored memories."""
     from app.agent.memory import search_memories
 
-    results = await search_memories(message)
+    results = await search_memories(message, user_id=user_id)
     if not results:
         return "I don't have any stored memories matching that query."
 
@@ -1198,7 +1234,7 @@ async def _handle_system_status() -> str:
 
     status = await get_status()
     parts = [
-        f"**NOVA System Status**",
+        "**NOVA System Status**",
         f"- Ollama: {'✅ Running' if status['ollama_running'] else '❌ Not running'}",
         f"- Model: {status['model_configured']} ({'✅ Available' if status['model_available'] else '❌ Not found'})",
         f"- Models installed: {', '.join(status['models_installed']) or 'None'}",

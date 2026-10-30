@@ -63,3 +63,27 @@ htmlcov/
 # Build
 *.pyc
 *.pyo
+
+# Environment files - keep examples trackable
+**/.env
+**/.env.*
+!**/.env.example
+
+# Local databases and backups
+**/*.db
+**/*.db-*
+**/*.sqlite*
+**/*.bak
+**/*.backup
+**/*.dump
+**/data/backups/**
+
+# Runtime data
+**/data/chroma/**
+!**/data/chroma/.gitkeep
+**/data/documents/**
+!**/data/documents/.gitkeep
+**/data/audio/**
+!**/data/audio/.gitkeep
+**/data/uploads/**
+!**/data/uploads/.gitkeep

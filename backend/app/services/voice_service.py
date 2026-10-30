@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import time
-from typing import Optional
 
 import structlog
 
-from app.speech import stt, tts, audio
 from app.agent.orchestrator import process_message
+from app.speech import audio, stt, tts
 
 logger = structlog.get_logger(__name__)
 
@@ -36,7 +35,8 @@ async def transcribe_audio(audio_bytes: bytes, filename: str) -> dict:
 async def voice_respond(
     audio_bytes: bytes,
     filename: str,
-    conversation_id: Optional[str] = None,
+    conversation_id: str | None = None,
+    user_id: str = "default_user",
 ) -> dict:
     """Full voice pipeline: audio → text → agent → speech."""
     total_start = time.perf_counter()
@@ -55,11 +55,12 @@ async def voice_respond(
             "stt_duration_ms": stt_ms,
         }
 
-    # 2. Process through agent
+    # 2. Process through agent with user ownership
     chat_response = await process_message(
         message=text,
         conversation_id=conversation_id,
         is_voice=True,
+        user_id=user_id,
     )
 
     # 3. Generate speech

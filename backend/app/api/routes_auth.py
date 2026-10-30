@@ -3,18 +3,19 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta
 
 import bcrypt
 import jwt
 import structlog
 from fastapi import APIRouter, HTTPException, Request, Response
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel
 from sqlalchemy import select
 
 from app.config import get_settings
 from app.database.database import get_db_session
 from app.database.models import User
+from app.dependencies.auth import get_current_user
 
 logger = structlog.get_logger(__name__)
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -52,16 +53,31 @@ def _verify_password(password: str, hashed: str) -> bool:
 
 def _create_token(user_id: str) -> str:
     settings = get_settings()
+    if not settings.jwt_secret:
+        raise HTTPException(
+            status_code=503,
+            detail="Local authentication is not configured",
+        )
     payload = {
         "sub": user_id,
-        "exp": datetime.now(timezone.utc) + timedelta(hours=settings.jwt_expire_hours),
-        "iat": datetime.now(timezone.utc),
+        "exp": datetime.now(UTC) + timedelta(hours=settings.jwt_expire_hours),
+        "iat": datetime.now(UTC),
     }
     return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 
 
+def _require_local_auth_configured() -> None:
+    if not get_settings().jwt_secret:
+        raise HTTPException(
+            status_code=503,
+            detail="Local authentication is not configured",
+        )
+
+
 def _decode_token(token: str) -> dict | None:
     settings = get_settings()
+    if not settings.jwt_secret:
+        return None
     try:
         return jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
     except (jwt.ExpiredSignatureError, jwt.InvalidTokenError):
@@ -86,6 +102,7 @@ def _set_cookie(response: Response, token: str) -> None:
 @router.post("/register", response_model=UserResponse)
 async def register(body: RegisterRequest, response: Response):
     """Create a new user account."""
+    _require_local_auth_configured()
     if len(body.password) < 6:
         raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
     if not body.name.strip():
@@ -116,13 +133,14 @@ async def register(body: RegisterRequest, response: Response):
         id=user.id,
         name=user.name,
         email=user.email,
-        created_at=user.created_at.isoformat() if user.created_at else datetime.now(timezone.utc).isoformat(),
+        created_at=user.created_at.isoformat() if user.created_at else datetime.now(UTC).isoformat(),
     )
 
 
 @router.post("/login", response_model=UserResponse)
 async def login(body: LoginRequest, response: Response):
     """Authenticate and issue a session cookie."""
+    _require_local_auth_configured()
     async with get_db_session() as session:
         result = await session.execute(select(User).where(User.email == body.email.lower().strip()))
         user = result.scalar_one_or_none()
@@ -152,6 +170,23 @@ async def logout(response: Response):
 @router.get("/me")
 async def get_me(request: Request):
     """Return the currently authenticated user, or 401."""
+    # 1. Try Bearer token if present
+    auth_header = request.headers.get("authorization") or request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        try:
+            user = await get_current_user(request)
+            return UserResponse(
+                id=user.id,
+                name=user.email.split("@")[0] if user.email else "User",
+                email=user.email,
+                created_at=datetime.now(UTC).isoformat(),
+            )
+        except HTTPException:
+            raise
+        except Exception:
+            raise HTTPException(status_code=401, detail="Invalid token")
+
+    # 2. Fall back to legacy cookie
     token = request.cookies.get("nova_session")
     if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")

@@ -6,16 +6,17 @@ frontend can introspect the agent without tight coupling.
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
 from app.agent.states import AgentState
-from app.agent.tool_registry import list_tools, get_tools_schema
+from app.agent.tool_registry import get_tools_schema, list_tools
+from app.dependencies.auth import get_current_user_id
 
 router = APIRouter(tags=["agent"])
 
 
 @router.get("/api/agent/states")
-async def get_agent_states():
+async def get_agent_states(user_id: str = Depends(get_current_user_id)):
     """Return all defined agent states with descriptions."""
     descriptions = {
         AgentState.IDLE: "Agent is ready and waiting for input.",
@@ -41,7 +42,7 @@ async def get_agent_states():
 
 
 @router.get("/api/agent/tools")
-async def get_tools():
+async def get_tools(user_id: str = Depends(get_current_user_id)):
     """Return all registered tools with their schemas."""
     tools = list_tools()
     return {

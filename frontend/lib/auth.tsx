@@ -1,4 +1,4 @@
-/* NOVA — Authentication API & React Context */
+/* NOVA — Authentication via Supabase Auth */
 
 "use client";
 
@@ -10,11 +10,16 @@ import {
   useCallback,
   type ReactNode,
 } from "react";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
+import type { Session } from "@supabase/supabase-js";
+import { supabase } from "./supabase";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
+/**
+ * Normalised user object exposed throughout the app.
+ * `name` is sourced from `user_metadata.full_name` set at sign-up.
+ * `created_at` is the Supabase account creation timestamp.
+ */
 export interface AuthUser {
   id: string;
   name: string;
@@ -31,20 +36,21 @@ interface AuthContextValue {
   refresh: () => Promise<void>;
 }
 
-// ── API Functions ────────────────────────────────────────────────────────────
+// ── Helpers ──────────────────────────────────────────────────────────────────
 
-async function authRequest<T>(path: string, body?: object): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
-    method: body ? "POST" : "GET",
-    headers: body ? { "Content-Type": "application/json" } : {},
-    body: body ? JSON.stringify(body) : undefined,
-    credentials: "include", // sends httpOnly cookies
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new Error(err.detail || `Request failed: ${res.status}`);
-  }
-  return res.json();
+/** Convert a Supabase session's user to the app's AuthUser shape. */
+function sessionToUser(session: Session): AuthUser {
+  const su = session.user;
+  return {
+    id: su.id,
+    // full_name is stored in user_metadata during signUp
+    name:
+      (su.user_metadata?.full_name as string | undefined) ||
+      su.email?.split("@")[0] ||
+      "User",
+    email: su.email ?? "",
+    created_at: su.created_at ?? "",
+  };
 }
 
 // ── Context ──────────────────────────────────────────────────────────────────
@@ -55,46 +61,86 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
-  const refresh = useCallback(async () => {
-    try {
-      const me = await authRequest<AuthUser>("/api/auth/me");
-      setUser(me);
-    } catch {
-      setUser(null);
-    } finally {
+  useEffect(() => {
+    // 1. Subscribe to future session changes first so we don't miss any events
+    //    that arrive while the initial getSession() call is in-flight.
+    const { data: listener } = supabase.auth.onAuthStateChange(
+      (_event, session) => {
+        setUser(session ? sessionToUser(session) : null);
+        setIsLoading(false);
+      }
+    );
+
+    // 2. Hydrate the initial session. onAuthStateChange will NOT fire for an
+    //    already-existing session on first load, so we read it explicitly.
+    supabase.auth.getSession().then(({ data }) => {
+      setUser(data.session ? sessionToUser(data.session) : null);
       setIsLoading(false);
-    }
+    });
+
+    return () => {
+      listener.subscription.unsubscribe();
+    };
   }, []);
 
-  useEffect(() => {
-    refresh();
-  }, [refresh]);
+  /**
+   * Manually re-read the current session. Exposed on the context so callers
+   * can force a re-sync (e.g. after an email confirmation redirect).
+   */
+  const refresh = useCallback(async () => {
+    const { data } = await supabase.auth.getSession();
+    setUser(data.session ? sessionToUser(data.session) : null);
+    setIsLoading(false);
+  }, []);
 
-  const login = useCallback(
-    async (email: string, password: string) => {
-      const u = await authRequest<AuthUser>("/api/auth/login", {
-        email,
-        password,
-      });
-      setUser(u);
-    },
-    []
-  );
+  /**
+   * Sign in with email and password.
+   * Throws a human-readable Error on failure so the login page can display it.
+   */
+  const login = useCallback(async (email: string, password: string) => {
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    });
+    if (error) throw new Error(error.message);
+    if (data.session) setUser(sessionToUser(data.session));
+  }, []);
 
+  /**
+   * Create a new account and sign in.
+   * `name` is stored as `full_name` in user_metadata so it survives sessions.
+   *
+   * NOTE: If Supabase email confirmation is enabled (recommended for
+   * production), the user must confirm their email before they can sign in.
+   * In that case `data.session` will be null and we throw a sentinel string
+   * so the login page can display a friendly confirmation message.
+   */
   const register = useCallback(
     async (name: string, email: string, password: string) => {
-      const u = await authRequest<AuthUser>("/api/auth/register", {
-        name,
+      const { data, error } = await supabase.auth.signUp({
         email,
         password,
+        options: { data: { full_name: name.trim() } },
       });
-      setUser(u);
+      if (error) throw new Error(error.message);
+
+      if (data.session) {
+        // Auto-confirmed (email confirmation disabled in Supabase dashboard)
+        setUser(sessionToUser(data.session));
+      } else {
+        // Email confirmation required — use a sentinel so login/page.tsx can
+        // render an info banner instead of a red error.
+        throw new Error("__CONFIRM_EMAIL__");
+      }
     },
     []
   );
 
+  /**
+   * Sign out and clear local user state.
+   */
   const logout = useCallback(async () => {
-    await authRequest<{ ok: boolean }>("/api/auth/logout", {});
+    await supabase.auth.signOut();
     setUser(null);
   }, []);
 

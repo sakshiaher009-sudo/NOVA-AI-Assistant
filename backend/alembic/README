@@ -1,0 +1,17 @@
+# Database migrations
+
+From the `backend` directory, configure `DATABASE_URL` for the intended
+database, then run:
+
+```sh
+python -m alembic upgrade head
+```
+
+The checked-in revisions are:
+
+- `d7d4d2df32b8`: initial multi-user schema.
+- `43b29f97b11a`: same-owner constraints for messages, document chunks, and
+  tool executions.
+
+Review the target URL and back up production databases before applying an
+upgrade. Do not use `Base.metadata.create_all()` as a production migration.
